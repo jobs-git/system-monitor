@@ -6,11 +6,13 @@ Just learned Gtk/glade/c in one week so please bear with the funny codes (it mig
 At present, it relies on kernel /proc as these is the rawest we can get to the kernel.
 
 # Set up
-The application was compiled and developed in a CentOS 7 machine (I choose this because this is the most stable Linux I have used so far, and I prefer it to be stable in the next 5 years)
+The application was compiled and developed for a 32 core CentOS 7 machine (I choose this because this is the most stable Linux I have used so far, and I prefer it to be stable in the next 5 years). 
 ```bash
 gcc -o gladewin main.c -Wall `pkg-config --cflags --libs gtk+-3.0` -lcairo -export-dynamic -lm -O2 -lcairo-script-interpreter
 ./galdewin
 ```
+Since my machine is 32 core, I dont know yet if it could work in other core machine.
+
 
 # To dos
 These are the following things that are needed to be implemented. Well, usually need help here so that it can become a full pledge system monitor and that we might have an alternative to gnome system monitor.
