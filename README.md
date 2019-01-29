@@ -14,16 +14,16 @@ gcc -o gladewin main.c -Wall `pkg-config --cflags --libs gtk+-3.0` -lcairo -expo
 Since my machine is 32 core, I dont know yet if it could work in other core machine.
 
 
-# To dos
+# TODO
 These are the following things that are needed to be implemented. Well, usually need help here so that it can become a full pledge system monitor and that we might have an alternative to gnome system monitor.
 
-1.) Making the three buttons in headerbar move in the center like in Gnome System Monitor.
+ [x] Making the three buttons in headerbar move in the center like in Gnome System Monitor.
 
-2.) GtkStack & GtkStackSwitcher for switching window content (There is no tutorial on how to use these in c-code, so I dont know what to do yet)
+ [x] GtkStack & GtkStackSwitcher for switching window content (There is no tutorial on how to use these in c-code, so I dont know what to do yet)
 
-3.) Process list like in Gnome System Monitor
+ [] Process list like in Gnome System Monitor
 
-4.) And file system
+ [] And file system
 
 # Screenshoots
 ![alt text](https://github.com/jobs-git/gtk-system-monitor/blob/master/Screenshot%20from%202019-01-25%2000-23-03.png)
