@@ -36,5 +36,12 @@ These are the following things that are needed to be implemented. Well, usually 
 - [ ] Implement GtkStack for Ram, Disk & Network
 
 # Screenshoots
+Recent
+![alt text](https://github.com/jobs-git/system-monitor/blob/master/Screenshot%20from%202019-02-05%2023-17-47.png)
+![alt text](https://github.com/jobs-git/system-monitor/blob/master/Screenshot%20from%202019-02-05%2023-18-37.png)
+![alt text](https://github.com/jobs-git/system-monitor/blob/master/Screenshot%20from%202019-02-05%2023-17-37.png)
+
+
+Previous
 ![alt text](https://github.com/jobs-git/gtk-system-monitor/blob/master/Screenshot%20from%202019-01-25%2000-23-03.png)
 ![alt text](https://github.com/jobs-git/gtk-system-monitor/blob/master/Screenshot%20from%202019-01-25%2000-19-51.png)
