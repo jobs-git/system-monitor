@@ -1,4 +1,4 @@
-# gtk-system-monitor
+# System Monitor
 C/Gtk/glade system monitor inspired by deepin system mon, task man &amp; gnome system monitor (parts of the codes such as, but not limited to images are pulled from the web).
 
 Just learned Gtk/glade/c in one week so please bear with the funny codes (it might still be funny for some time)
