@@ -3,10 +3,20 @@
 #include <stdlib.h>
 #include <cairo.h>
 #include <math.h>
-
+#include <dirent.h>
+#include<pthread.h> 
+#include <X11/Xlib.h>
+#include<string.h> 
+#include<unistd.h>
+#include <ctype.h>
+#include <glib-object.h>
 //todo:
 //make loadavg animation smoother
-
+//fix segmentation fault
+//segmantation fault when changing drive letters
+//segmentation fault when one process is removed
+//fix memory leaks
+//speed up animation
 //create a dynamic array
 
 typedef struct
@@ -14,6 +24,31 @@ typedef struct
     cairo_t *cr;
 } surfaceArray;
 
+pthread_t draw_core;
+pthread_t fast_update_thread;
+typedef struct
+{
+    char status[100];
+    char stat[100];
+} process_path_t;
+
+typedef struct
+{
+    glong id;
+    gchararray name[100];
+    char state[2];
+    double ram_usage;
+    float disk_usage;
+    double cpu_usage;
+    long double utime;
+    long double stime;
+} process_t;
+
+process_t *process_store_final;
+process_t process_store_temp;
+process_t *process_store_initial;
+process_t *process_data;
+process_path_t *process_paths;
 typedef struct
 {
     char c[100];
@@ -23,6 +58,11 @@ typedef struct
 {
     int c[20];
 } disposable_num;
+
+typedef struct
+{
+    long double c[20];
+} disposable_ld;
 
 typedef struct
 {
@@ -38,6 +78,7 @@ DynamicArray *dyn_a;
 DynamicArray *dyn_b;
 
 dynamic_stored_load *dyn_stored_load;
+dynamic_stored_load *temp_load;
 
 dynamic_stored_load *dyn_stored_net_load;
 dynamic_stored_load *dyn_stored_disk_load;
@@ -45,6 +86,7 @@ long double dyn_stored_disk_load_slow_u[2];
 DisposableString *dispose_string;
 
 disposable_num *dispose_num;
+disposable_ld *dispose_num_slow;
 
 //drawingArray *dyn_dwm;
 
@@ -58,7 +100,7 @@ int factorable_cpu_count[2];
 
 int width_cpu_count;
 int height_cpu_count;
-
+int num_process = 250;
 static cairo_surface_t *surface = NULL;
 static cairo_surface_t *surface_core_graph = NULL;
 static cairo_surface_t *surface_ram = NULL;
@@ -73,8 +115,8 @@ double *fast_onceloadavg;
 double beat_stored_load[100] = {0};
 int cpuid[33] = {0};
 int cpuid_b[33] = {0};
-long double a[33][4] = {0}, b[33][4] = {0};
-int x;
+long double a[33][10] = {0}, b[33][10] = {0};
+int x = 0;
 int g_cpu_count;
 FILE *fp;
 char dump[50];
@@ -89,6 +131,12 @@ GtkWidget *g_id_network_out;
 GtkWidget *g_id_network_in;
 GtkWidget *g_id_disk_read;
 GtkWidget *g_id_disk_write;
+GtkWidget *g_id_headerbar_center;
+GtkListStore *g_id_list;
+GtkWidget *g_id_tree;
+GtkWidget *g_id_proc_dialog;
+GtkTreeSortable *g_sortable;
+
 
 long double ram_u;
 long double memtotal;
@@ -128,7 +176,6 @@ long double initial_disk_read_temp = 0;
 long double initial_disk_write_total = 0;
 long double initial_disk_write_temp = 0;
 
-
 long double final_disk_read_temp_slow_u = 0;
 long double final_disk_read_total_slow_u = 0;
 long double final_disk_write_temp_slow_u = 0;
@@ -138,18 +185,36 @@ long double initial_disk_read_total_slow_u = 0;
 long double initial_disk_read_temp_slow_u = 0;
 long double initial_disk_write_total_slow_u = 0;
 long double initial_disk_write_temp_slow_u = 0;
+long double cpu_total_time_final, cpu_total_time_initial;
 
 FILE *netinfo_fast_u;
 FILE *netinfo;
+
+int disable_process = 1;
+int disable_performance = 0;
+
+void visible_child_changed (GObject *stack,
+                       GParamSpec *pspec)
+{
+    char *name;
+    name = (char *)gtk_stack_get_visible_child_name (stack);
+    //printf("%s\n",name);
+    if(strcmp(name, "Performance") == 0){
+        disable_process = 1;
+        disable_performance = 0;
+    }
+    if(strcmp(name, "Processes") == 0){
+        //printf("%s\n",name);
+        disable_performance = 1;
+        disable_process = 0;
+    }
+    //free(name);
+}
 
 gfloat f(gfloat y)
 {
     return -4 * y; //return x*sin((y*x/M_PI)+M_PI);//y*50*sin ((x/M_PI)+M_PI);
 }
-
-
-
-
 
 static gboolean
 on_configure_event_disk(
@@ -257,42 +322,6 @@ static void on_activate6(GtkWidget *window, GtkBuilder *builder)
 
     g_timeout_add(50, (GSourceFunc)on_timeout_disk, da);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 static gboolean
 on_configure_event_net(
@@ -532,7 +561,7 @@ on_draw_core_graph(
     cairo_paint(cr);
     return TRUE;
 }
-
+int bol_first_draw=1;
 gboolean
 on_timeout_core_graph(
     gpointer data)
@@ -557,25 +586,30 @@ on_timeout_core_graph(
     float box_dist = ((width) / 8);
     float box_lenght = ((width - 35) / 8);
     int i = 0;
-    for (i = 0; i < 8; i++)
-    {
-        cairo_set_source_rgb(cr, 0.152941176, 0.545098039, 0.807843137);
-        cairo_rectangle(cr, 0.5 + (box_dist * i), 0.5, box_lenght - 0.5, 80);
-        cairo_stroke(cr);
+    if(bol_first_draw){
+        for (i = 0; i < 8; i++)
+        {
+            cairo_set_source_rgb(cr, 0.152941176, 0.545098039, 0.807843137);
+            cairo_rectangle(cr, 0.5 + (box_dist * i), 0.5, box_lenght - 0.5, 80);
+            cairo_stroke(cr);
+//cairo_clip(cr);
+            cairo_set_source_rgba(cr, 0.376470588, 0.749019608, 1, 0.2);
+            for (j = 1; j <= 5; j++)
+            {
+                cairo_move_to(cr, ((box_lenght / 5) * j) + box_dist * i, 0.5);
+                cairo_line_to(cr, ((box_lenght / 5) * j) + box_dist * i, 80.5);
+            }
+            for (j = 1; j <= 8; j++)
+            {
+                cairo_move_to(cr, 0.5 + box_dist * i, (10 * j) + 0.5);
+                cairo_line_to(cr, box_lenght + 0.5 + box_dist * i, (10 * j) + 0.5);
+            }
+            cairo_stroke(cr);
 
-        cairo_set_source_rgba(cr, 0.376470588, 0.749019608, 1, 0.2);
-        for (j = 1; j <= 5; j++)
-        {
-            cairo_move_to(cr, ((box_lenght / 5) * j) + box_dist * i, 0.5);
-            cairo_line_to(cr, ((box_lenght / 5) * j) + box_dist * i, 80.5);
         }
-        for (j = 1; j <= 8; j++)
-        {
-            cairo_move_to(cr, 0.5 + box_dist * i, (10 * j) + 0.5);
-            cairo_line_to(cr, box_lenght + 0.5 + box_dist * i, (10 * j) + 0.5);
-        }
-        cairo_stroke(cr);
+        //bol_first_draw=0;
     }
+
 
     for (i = 0; i < 8; i++)
     {
@@ -739,25 +773,29 @@ on_timeout_core_graph(
         /* Draw the curve */
         cairo_stroke(cr);
     }
-
+    //cairo_clip(cr);
     cairo_destroy(cr);
 
     gtk_widget_queue_draw(GTK_WIDGET(data));
     return TRUE;
 }
+    GtkWidget *da_core;
 
+void* on_timeout_core_thread(void *args){
+    g_timeout_add(50, (GSourceFunc)on_timeout_core_graph, da_core);
+}
 static void on_activate3(GtkWidget *window, GtkBuilder *builder)
 {
-    GtkWidget *da;
-    da = GTK_WIDGET(gtk_builder_get_object(builder, "dwmarea_cpu_cores"));
+
+    da_core = GTK_WIDGET(gtk_builder_get_object(builder, "dwmarea_cpu_cores"));
     //gtk_widget_set_size_request(da, 1040, 500);
 
-    g_signal_connect(da, "draw",
+    g_signal_connect(da_core, "draw",
                      G_CALLBACK(on_draw_core_graph), NULL);
-    g_signal_connect(da, "configure-event",
+    g_signal_connect(da_core, "configure-event",
                      G_CALLBACK(on_configure_event_core_graph), NULL);
+    pthread_create(&(draw_core), NULL, &on_timeout_core_thread, NULL); 
 
-    g_timeout_add(50, (GSourceFunc)on_timeout_core_graph, da);
 }
 
 static gboolean
@@ -817,8 +855,8 @@ on_timeout(gpointer data)
 
     int width = gtk_widget_get_allocated_width(widget);
     int height = gtk_widget_get_allocated_height(widget);
-    int x = (int)(width / 2.0 * (cos(3.1416 / 180 * ang) + 1));
-    int y = (int)(height / 2.0 * (sin(3.1416 / 180 * ang) + 1));
+    //int x = (int)(width / 2.0 * (cos(3.1416 / 180 * ang) + 1));
+    //int y = (int)(height / 2.0 * (sin(3.1416 / 180 * ang) + 1));
     ang = (ang + 2) % 360;
 
     cairo_set_line_width(cr, 7.5);
@@ -880,6 +918,9 @@ on_destroy(
         cairo_surface_destroy(surface);
 }
 
+
+
+
 static void
 button_clicked(
     GtkWidget *button,
@@ -924,103 +965,19 @@ static void on_activate2(GtkWidget *window, GtkBuilder *builder)
 #define ZOOM_X 100.0
 #define ZOOM_Y 100.0
 
+
+
+
+
+
 typedef struct
 {
     GtkWidget *w_lbl_time;
 } app_widgets;
 
-void initial_fast_update()
-{
-    fp = fopen("/proc/stat", "r");
-
-    fscanf(fp, "%*s %Lf %Lf %Lf %Lf", &dyn_a[0].c[0], &dyn_a[0].c[1], &dyn_a[0].c[2], &dyn_a[0].c[3]);
-
-    int i = 0;
-    char line[200] = {0};
-
-    while (fgets(line, 200, fp) != NULL)
-    {
-        if (i == 0)
-        {
-        }
-        else
-        {
-            sscanf(line, "cpu%d %LF %LF %LF %LF", &cpuid[i], &dyn_a[i].c[0], &dyn_a[i].c[1], &dyn_a[i].c[2], &dyn_a[i].c[3]);
-            //printf("%s",line);
-        }
-        if (g_cpu_count - 1 == i)
-        {
-            break;
-        }
-        i++;
-    }
-    fclose(fp);
-    netinfo_fast_u = fopen("/proc/net/dev", "r");
-    //do anything here fix everything fix network icon
-    char mem_stats[200];
-    initial_inbound_temp_fast_u = 0;
-    initial_inbound_total_fast_u = 0;
-    initial_outbound_temp_fast_u = 0;
-    initial_outbound_total_fast_u = 0;
-    i = 0;
-    while (fgets(mem_stats, 200, netinfo_fast_u) != NULL)
-    {
-        if (i == 2)
-        {
-            sscanf(mem_stats, "%s %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF", &dispose_string[0].c, &initial_inbound_temp_fast_u, &dispose_num[0].c[0], &dispose_num[0].c[1], &dispose_num[0].c[2],
-                   &dispose_num[0].c[3], &dispose_num[0].c[4], &dispose_num[0].c[5], &dispose_num[0].c[6], &initial_outbound_temp_fast_u,
-                   &dispose_num[0].c[7], &dispose_num[0].c[8], &dispose_num[0].c[9], &dispose_num[0].c[10], &dispose_num[0].c[11], &dispose_num[0].c[12], &dispose_num[0].c[13]);
-            initial_inbound_total_fast_u += initial_inbound_temp_fast_u;
-            initial_outbound_total_fast_u += initial_outbound_temp_fast_u;
-        }
-        else
-        {
-            i++;
-        }
-    }
-    //printf("%LG percent used\n",initial_outbound_total);
-
-    fclose(netinfo_fast_u);
-
-    fp = fopen("/proc/diskstats", "r");
-    //int flags;
-    mem_stats[200] = 0;
-    initial_disk_read_total = 0;
-    initial_disk_read_temp = 0;
-    initial_disk_write_total = 0;
-    initial_disk_write_temp = 0;
-    i = 0;
-    while (fgets(mem_stats, 200, fp) != NULL)
-    {
-        physical_drive[100] = 0;
-        sscanf(mem_stats, "%Lf %Lf %s %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf", &dispose_num[0].c[0], &dispose_num[0].c[2], &physical_drive,
-               &dispose_num[0].c[3], &dispose_num[0].c[4], &initial_disk_read_temp, &dispose_num[0].c[5], &dispose_num[0].c[6], &dispose_num[0].c[7], &initial_disk_write_temp,
-               &dispose_num[0].c[8], &dispose_num[0].c[9], &dispose_num[0].c[10], &dispose_num[0].c[11]);
-        i = 0;
-        int flag = 0;
-
-        for (i = 0; physical_drive[i] != '\0'; i++)
-        {
-            if (physical_drive[i] == '0' || physical_drive[i] == '1' || physical_drive[i] == '2' || physical_drive[i] == '3' || physical_drive[i] == '4' || physical_drive[i] == '5' || physical_drive[i] == '6' || physical_drive[i] == '7' || physical_drive[i] == '8' || physical_drive[i] == '9')
-            {
-                flag = flag + 1;
-            }
-        }
-
-        if (flag == 0)
-        {
-
-            initial_disk_read_total += initial_disk_read_temp;
-            initial_disk_write_total += initial_disk_write_temp;
-        }
-    }
-    //printf("Drive name %LG\n",final_disk_read_total);
-
-    fclose(fp);
-}
-
 void final_fast_update()
 {
+
     //static unsigned int count = 0;
     char str_count[30] = {0};
 
@@ -1049,8 +1006,14 @@ void final_fast_update()
     fclose(fp);
     i = 0;
     //fast_onceloadavg[0] = (((dyn_b[0].c[0] + dyn_b[0].c[1] + dyn_b[0].c[2]) - (dyn_a[0].c[0] + dyn_a[0].c[1] + dyn_a[0].c[2])) / ((dyn_b[0].c[0] + dyn_b[0].c[1] + dyn_b[0].c[2] + dyn_b[0].c[3]) - (dyn_a[0].c[0] + dyn_a[0].c[1] + dyn_a[0].c[2] + dyn_a[0].c[3]))) * 100;
+    double dm;
     for (i = 0; i <= (g_cpu_count - 1); i++)
     {
+        memset(temp_load, 0, sizeof temp_load);
+        //temp_load[i] = {0};
+        temp_load = dyn_stored_load;
+        memset(dyn_stored_load, 0, sizeof dyn_stored_load);
+        //dyn_stored_load[i] = {0};
         fast_onceloadavg[i] = (((dyn_b[i].c[0] + dyn_b[i].c[1] + dyn_b[i].c[2]) - (dyn_a[i].c[0] + dyn_a[i].c[1] + dyn_a[i].c[2])) / ((dyn_b[i].c[0] + dyn_b[i].c[1] + dyn_b[i].c[2] + dyn_b[i].c[3]) - (dyn_a[i].c[0] + dyn_a[i].c[1] + dyn_a[i].c[2] + dyn_a[i].c[3]))) * 100;
         if (isnan(fast_onceloadavg[i]))
         {
@@ -1063,17 +1026,21 @@ void final_fast_update()
         int j = 0;
         for (j = 0; j < 100; j++)
         {
-            dyn_stored_load[i].c[j] = dyn_stored_load[i].c[j + 1];
+            dyn_stored_load[i].c[j] = temp_load[i].c[j + 1];
         }
         if (i == 0)
         {
-            double dm = ((fast_loadavg[0] * x) / M_PI) + M_PI;
+            dm = ((fast_loadavg[0] * x) / M_PI) + M_PI;
             dyn_stored_load[i].c[99] = 4 * sqrt((fast_loadavg[0]) / 80) * ((sin(2 * dm) + sin(3 * dm)));
         }
         else
         {
             dyn_stored_load[i].c[99] = fast_loadavg[i];
         }
+        dyn_a[i].c[0]=dyn_b[i].c[0];
+        dyn_a[i].c[1]=dyn_b[i].c[1];
+        dyn_a[i].c[2]=dyn_b[i].c[2];
+        dyn_a[i].c[3]=dyn_b[i].c[3];
     }
 
     FILE *meminfo = fopen("/proc/meminfo", "rb");
@@ -1125,6 +1092,8 @@ void final_fast_update()
     float net_load[2] = {0};
     net_load[0] = (float)((final_inbound_total_fast_u - initial_inbound_total_fast_u) / (1024 * 1024 * 0.05)); //MB/s
     net_load[1] = (float)((final_outbound_total_fast_u - initial_outbound_total_fast_u) / (1024 * 1024 * 0.05));
+    initial_inbound_total_fast_u = final_inbound_total_fast_u;
+    initial_outbound_total_fast_u = final_outbound_total_fast_u;
     if (isnan(net_load[0]))
     {
         net_load[0] = 0;
@@ -1189,9 +1158,11 @@ void final_fast_update()
         }
     }
     float disk_load[2] = {0};
-    disk_load[0] = (float)((final_disk_read_total - initial_disk_read_total) / (1024 * 1024 * 2 * 0.05)); // read MB/s
+    disk_load[0] = (float)((final_disk_read_total - initial_disk_read_total) / (1024 * 1024 * 2 * 0.05));   // read MB/s
     disk_load[1] = (float)((final_disk_write_total - initial_disk_write_total) / (1024 * 1024 * 2 * 0.05)); // write MB/s
     //printf("Drive name %LG\n",final_disk_read_total);
+    initial_disk_read_total = final_disk_read_total;
+    initial_disk_write_total = final_disk_write_total;
     if (isnan(disk_load[0]))
     {
         disk_load[0] = 0;
@@ -1223,7 +1194,7 @@ void final_fast_update()
     {
         x = 0;
     }
-    initial_fast_update();
+    //initial_fast_update();
 }
 
 gboolean fast_update()
@@ -1233,75 +1204,127 @@ gboolean fast_update()
     return TRUE;
 }
 
-void initial_slow_update()
-{
-    fp = fopen("/proc/stat", "r");
-    fscanf(fp, "%*s %Lf %Lf %Lf %Lf", &a[0][0], &a[0][1], &a[0][2], &a[0][3]);
-    fclose(fp);
 
-    netinfo = fopen("/proc/net/dev", "r");
-    //do anything here fix everything fix network icon
-    char mem_stats[200];
-    initial_inbound_temp = 0;
-    initial_inbound_total = 0;
-    initial_outbound_temp = 0;
-    initial_outbound_total = 0;
-    int i = 0;
-    while (fgets(mem_stats, 200, netinfo) != NULL)
-    {
-        if (i == 2)
-        {
-            sscanf(mem_stats, "%s %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF", &dispose_string[0].c, &initial_inbound_temp, &dispose_num[0].c[0], &dispose_num[0].c[1], &dispose_num[0].c[2],
-                   &dispose_num[0].c[3], &dispose_num[0].c[4], &dispose_num[0].c[5], &dispose_num[0].c[6], &initial_outbound_temp,
-                   &dispose_num[0].c[7], &dispose_num[0].c[8], &dispose_num[0].c[9], &dispose_num[0].c[10], &dispose_num[0].c[11], &dispose_num[0].c[12], &dispose_num[0].c[13]);
-            initial_inbound_total += initial_inbound_temp;
-            initial_outbound_total += initial_outbound_temp;
-        }
-        else
-        {
-            i++;
-        }
+
+pthread_t tid[2]; 
+pthread_t proc_dialog[1];
+
+pthread_mutex_t lock;
+GtkListStore *model;
+int initialize_this = 0;
+//fix pthread here
+
+
+
+
+void slow_process(){
+    //printf("asdfasdfasdf %d\n",initialize_this);
+    //pthread_mutex_lock(&lock); 
+
+
+    if(initialize_this==0||(disable_process==1)){
+        return 0;
     }
-    //printf("%LG percent used\n",initial_outbound_total);
-
-    fclose(netinfo);
 
 
-    fp = fopen("/proc/diskstats", "r");
-    //int flags;
-    mem_stats[200] = 0;
-    initial_disk_read_total_slow_u = 0;
-    initial_disk_read_temp_slow_u = 0;
-    initial_disk_write_total_slow_u = 0;
-    initial_disk_write_temp_slow_u = 0;
-    i = 0;
-    while (fgets(mem_stats, 200, fp) != NULL)
-    {
-        physical_drive_slow_u[100] = 0;
-        sscanf(mem_stats, "%Lf %Lf %s %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf", &dispose_num[0].c[0], &dispose_num[0].c[2], &physical_drive_slow_u,
-               &dispose_num[0].c[3], &dispose_num[0].c[4], &initial_disk_read_temp_slow_u, &dispose_num[0].c[5], &dispose_num[0].c[6], &dispose_num[0].c[7], &initial_disk_write_temp_slow_u,
-               &dispose_num[0].c[8], &dispose_num[0].c[9], &dispose_num[0].c[10], &dispose_num[0].c[11]);
-        i = 0;
-        int flag = 0;
 
-        for (i = 0; physical_drive_slow_u[i] != '\0'; i++)
-        {
-            if (physical_drive_slow_u[i] == '0' || physical_drive_slow_u[i] == '1' || physical_drive_slow_u[i] == '2' || physical_drive_slow_u[i] == '3' || physical_drive_slow_u[i] == '4' || physical_drive_slow_u[i] == '5' || physical_drive_slow_u[i] == '6' || physical_drive_slow_u[i] == '7' || physical_drive_slow_u[i] == '8' || physical_drive_slow_u[i] == '9')
-            {
-                flag = flag + 1;
+
+    //GtkTreeIter   *iter;
+    GtkTreeIter iter1;
+
+    int i;
+    int k;
+    char cpuu[10];
+    char memm[10];
+    //printf("%s\n",cpuu);
+    //sprintf(rownum, "%d", l);
+    int l=0;
+    long int for_remove[300];
+    for(k=0;k<300;k++){
+        for_remove[k]=-1;
+    }
+    GtkTreePath *path;
+    char rownum[10];
+    gchararray *aa,*bb,*cc,*dd,*ee;
+    gfloat *gg;
+    glong *ff=0;
+    int ret;
+    int number_of_rows = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(g_id_list), NULL);
+    //return 0;
+    //printf("%d\n",number_of_rows);
+    if(number_of_rows>0 ){
+        int thereis = 0;
+        k=0;
+        int first_loop = 1;                                                                      
+        for(l=0;l<number_of_rows;l++){
+            thereis = 0;
+            memset(&rownum, '\0', sizeof(rownum)); // zero out the buffer    
+            sprintf(rownum, "%d", l);
+            path = gtk_tree_path_new_from_string (rownum);
+            gtk_tree_model_get_iter (GTK_TREE_MODEL (g_id_list),
+            &iter1,
+            path);
+
+            gtk_tree_model_get (g_id_list, &iter1,0, &aa,1, &bb,2, &cc,3, &dd,4, &ee,5, &ff,6,&gg,-1); //goes to segfault when iter1 number is beyond the list
+            g_free(aa);
+            g_free(bb);
+            g_free(cc);
+            g_free(dd);
+            g_free(ee);
+            gg=NULL;
+            rownum[10] = "\0";
+            //break; //checker
+                            //pthread_mutex_lock(&lock); 
+            for(i=0;i<num_process;i++){
+
+                if(ff==process_data[i].id){
+                    
+
+                    memset(&cpuu, '\0', sizeof(cpuu)); // zero out the buffer    
+                    memset(&memm, '\0', sizeof(memm)); // zero out the buffer    
+                    
+                    sprintf(cpuu, "%.2f %%", process_data[i].cpu_usage);
+                    sprintf(memm, "%.2f MB", process_data[i].ram_usage);
+                    thereis = 1;
+
+                    //printf("sucess!");
+                    //printf("%d\n %d",ff,process_store_final[j].id);
+                    gtk_list_store_set (GTK_LIST_STORE(g_id_list), &iter1,1,memm,2,cpuu,3,"0.00 kB/s",4,"0.00 kB/s",5,process_data[i].id,6,process_data[i].ram_usage,-1);
+                    
+                    cpuu[10] = "\0";
+                    memm[10] = "\0";
+                    break;
+                }
+
             }
+                            //pthread_mutex_unlock(&lock);
+            if((thereis!=1)&&(first_loop==1)){
+                gtk_list_store_remove(GTK_LIST_STORE(g_id_list), &iter1);
+                for_remove[k]=ff;
+                k++;
+                thereis = 0;
+                first_loop = 0;
+                number_of_rows = number_of_rows - 1;
+                //gtk_list_store_remove(GTK_LIST_STORE(g_id_list), &iter1);
+            }
+            gtk_tree_path_free (path);
+            ff=NULL;
+            //printf("%d\n %d",ff,process_store_final[j].id);
+        }                                                                 
+        if(thereis==0){
+            //gtk_list_store_append (GTK_LIST_STORE(g_id_list) , &iter);
+            //gtk_list_store_set (GTK_LIST_STORE(g_id_list), &iter,0, "asdf",1,"MB",2,cpuu,3,"kB/s",4,"kB/s",5,-1);
         }
-
-        if (flag == 0)
-        {
-
-            initial_disk_read_total_slow_u += initial_disk_read_temp_slow_u;
-            initial_disk_write_total_slow_u += initial_disk_write_temp_slow_u;
-        }
+    }else if(number_of_rows==0){
+        //gtk_list_store_append (GTK_LIST_STORE(g_id_list) , &iter);
+        //gtk_list_store_set (GTK_LIST_STORE(g_id_list), &iter,0, "asdf",1,"MB",2,cpuu,3,"kB/s",4,"kB/s",5, (glong* )process_store_final[j].id,-1);
     }
-    //printf("Drive name %LG\n",final_disk_read_total);
 
-    fclose(fp);
+    //g_free(ff);
+    //g_free(gg);
+
+    //path=NULL;
+    //g_clear_object(path);
 }
 
 void final_slow_update()
@@ -1309,9 +1332,14 @@ void final_slow_update()
     char str_count[30] = {0};
     char str_count2[30] = {0};
     fp = fopen("/proc/stat", "r");
-    fscanf(fp, "%*s %Lf %Lf %Lf %Lf", &b[0][0], &b[0][1], &b[0][2], &b[0][3]);
+    fscanf(fp, "%*s %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf", &b[0][0], &b[0][1], &b[0][2], &b[0][3],&b[0][4],&b[0][5],&b[0][6],&b[0][7],&b[0][8],&b[0][9]);
     fclose(fp);
+    cpu_total_time_final = b[0][0]+b[0][1]+b[0][2]+b[0][3]+b[0][4]+b[0][5]+b[0][6]+b[0][7]+b[0][8]+b[0][9];
     onceloadavg[0] = (((b[0][0] + b[0][1] + b[0][2]) - (a[0][0] + a[0][1] + a[0][2])) / ((b[0][0] + b[0][1] + b[0][2] + b[0][3]) - (a[0][0] + a[0][1] + a[0][2] + a[0][3]))) * 100;
+    a[0][0] = b[0][0]; 
+    a[0][1] = b[0][1];
+    a[0][2] = b[0][2]; 
+    a[0][3] = b[0][3];
     if (isnan(onceloadavg[0]))
     {
         loadavg[0] = 0;
@@ -1340,9 +1368,8 @@ void final_slow_update()
 
     sprintf(str_count2, "%0.1f GB/%0.1f GB", (float)((swaptotal - swapfree) / (1024 * 1024)), (float)(swaptotal / (1024 * 1024)));
     gtk_label_set_text(GTK_LABEL(g_id_swap_used1), str_count2);
-    // to fix for final inbout outbount
+
     netinfo = fopen("/proc/net/dev", "r");
-    //do anything here fix everything fix network icon
     char mem_stats[200];
     final_inbound_temp = 0;
     final_inbound_total = 0;
@@ -1351,6 +1378,7 @@ void final_slow_update()
     int i = 0;
     while (fgets(mem_stats, 200, netinfo) != NULL)
     {
+        //continue;
         if (i == 2)
         {
             sscanf(mem_stats, "%s %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF %LF", &dispose_string[0].c, &final_inbound_temp, &dispose_num[0].c[0], &dispose_num[0].c[1], &dispose_num[0].c[2],
@@ -1371,11 +1399,8 @@ void final_slow_update()
 
     sprintf(str_count, "%0.2f", (float)((final_outbound_total - initial_outbound_total) / (1024 * 1)));
     gtk_label_set_text(GTK_LABEL(g_id_network_out), strcat(str_count, " kByte/s"));
-
-
-
-
-
+    initial_inbound_total = final_inbound_total;
+    initial_outbound_total = final_outbound_total;
     fp = fopen("/proc/diskstats", "r");
     //int flags;
     mem_stats[200] = 0;
@@ -1386,6 +1411,7 @@ void final_slow_update()
     i = 0;
     while (fgets(mem_stats, 200, fp) != NULL)
     {
+        //continue;
         physical_drive_slow_u[100] = 0;
         sscanf(mem_stats, "%Lf %Lf %s %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf %Lf", &dispose_num[0].c[0], &dispose_num[0].c[2], &physical_drive_slow_u,
                &dispose_num[0].c[3], &dispose_num[0].c[4], &final_disk_read_temp_slow_u, &dispose_num[0].c[5], &dispose_num[0].c[6], &dispose_num[0].c[7], &final_disk_write_temp_slow_u,
@@ -1409,8 +1435,10 @@ void final_slow_update()
         }
     }
     float disk_load_slow_u[2] = {0};
-    disk_load_slow_u[0] = (float)((final_disk_read_total_slow_u - initial_disk_read_total_slow_u) / (1024 * 2)); // read MB/s
+    disk_load_slow_u[0] = (float)((final_disk_read_total_slow_u - initial_disk_read_total_slow_u) / (1024 * 2));   // read MB/s
     disk_load_slow_u[1] = (float)((final_disk_write_total_slow_u - initial_disk_write_total_slow_u) / (1024 * 2)); // write MB/s
+    initial_disk_read_total_slow_u = final_disk_read_total_slow_u;
+    initial_disk_write_total_slow_u = final_disk_write_total_slow_u;
     //printf("Drive name %LG\n",final_disk_read_total);
     if (isnan(disk_load_slow_u[0]))
     {
@@ -1430,32 +1458,203 @@ void final_slow_update()
     }
     fclose(fp);
 
+    DIR *d;
 
+    struct dirent *dir;
+    FILE *pf;
+    char *endptr;
+    int name_num;
+    d = opendir("/proc");
+    char *process_path = "/proc/";
+    char dest[100];
+    char dest2[100];
+    char dest3[100];
+    //process_path ={'a','d','f','\0'};
+    //process_path = 123;
+    int pid_exist;
+    char *dir_name;
+    int k;
+    int fscanerr = 10000;
+    //expensive operations fscanf/sscanf
+    if (d)
+    {
+        //make a way so &&(disable_process==0) will not give false positive
+        //printf("active\n");
+        int j = 0;
+        //
+        memset(process_store_final, '\0', sizeof(process_store_final));
+        memset(process_data, '\0', sizeof(process_data));
 
+        k=0;
+        //first run only to fix
 
+        //int number_of_rows = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(g_id_list), NULL);
+                        char line[200];
+                //char *args;
+                long double ram_used_kb;
+        GtkTreeIter   iter;
+        int alen;
+        int process_parent;
+        while ((dir = readdir(d)) != NULL)
+        {
+            process_parent = 0;
+            name_num = strtol(dir->d_name, &endptr, 10);
+                            
+            if (*endptr != '\0' || endptr == name_num)
+            {
+                continue;
+            }
+            else
+            {
+                alen = strlen(dir->d_name);
+                strcpy(dest2, process_path);
+                strcpy(dest2+6, dir->d_name);
+                strcpy(dest2+6+alen, "/status");
+                
+                strcpy(dest3, process_path);
+                strcpy(dest3+6, dir->d_name);
+                strcpy(dest3+6+alen, "/stat");
+                //if(something!=2){systemd go get}
+                pf = fopen(dest3, "r"); //fopen for ram and disk i/o
+                line[0]="\0";
+                //args=0;
+                ram_used_kb=0;
 
+                if(pf!=NULL){
+                    fscanerr = fscanf(pf, "%d (%[^)] ) %s %d %d %d %d %d %d %d %d %d %d %Lf %Lf", &process_store_temp.id, &process_store_temp.name, &process_store_temp.state, &process_parent, &dispose_num_slow[0].c[1],
+                    &dispose_num_slow[0].c[2], &dispose_num_slow[0].c[3], &dispose_num_slow[0].c[4], &dispose_num_slow[0].c[5], &dispose_num_slow[0].c[6],
+                    &dispose_num_slow[0].c[7], &dispose_num_slow[0].c[8], &dispose_num_slow[0].c[9],
+                    &process_store_temp.utime, &process_store_temp.stime);
+                    if(fscanerr==EOF){
+                        process_store_temp.id = 0;
+                        process_store_temp.name[0] ='\0';
+                        process_store_temp.state[0]='\0';
+                        process_store_temp.utime=0;
+                        process_store_temp.stime=0;
+                        continue;
+                    }else if(process_parent==2){
+                        process_store_temp.id = 0;
+                        process_store_temp.name[0] ='\0';
+                        process_store_temp.state[0]='\0';
+                        process_store_temp.utime=0;
+                        process_store_temp.stime=0;
+                        fclose(pf);
+                        continue;                        
+                    }else{
+                        fclose(pf);
+                        pf = fopen(dest2, "r");
+                        int ram_usage_absent = 1;
+                        while (fgets(line, 200, pf) != NULL)
+                        {
+                            //break;
+                            if (strstr(line, "RssAnon") != NULL)
+                            {
+                                sscanf(line,"%s %LF %s",&dispose_string[0].c,&ram_used_kb,&dispose_string[1].c);
+                                ram_usage_absent=0;
+                                break;
+                            }
+                            if(strstr(line, "Uid") != NULL)
+                            {
+                            }
+                        }
+                        if(ram_usage_absent){
+                            ram_used_kb=0;
+                            fclose(pf);
+                            continue;
+                        }
+                        fclose(pf);
+                        if(initialize_this == 0){
+                            gtk_list_store_append (GTK_LIST_STORE(g_id_list) , &iter);
+                            gtk_list_store_set (GTK_LIST_STORE(g_id_list), &iter,0, process_store_temp.name,1,"0 MB",2,"0.00 %",3,"0 kB/s",4,"0 kB/s",5, process_store_temp.id,-1);
+                            process_store_initial[j].id = process_store_temp.id;
+                            process_store_initial[j].utime=process_store_temp.utime;
+                            process_store_initial[j].stime=process_store_temp.stime;
+                            process_store_final[j].id = process_store_temp.id;
+                            process_store_final[j].utime=process_store_temp.utime;
+                            process_store_final[j].stime=process_store_temp.stime;
+                            //disable_process==1;
+                            j++;
+                            continue;
+                            //break;
+                            //gtk_tree_iter_free(iter);
+                        }
+                        process_store_final[j].id = process_store_temp.id;
+                        process_store_final[j].utime=process_store_temp.utime;
+                        process_store_final[j].stime=process_store_temp.stime;
+                        //printf("%d\n",j);
+                        pid_exist=0;
+                        for(i=0;i<num_process;i++){
+                            //break;
+                            if(process_store_final[j].id==process_store_initial[i].id){
+                                sprintf(process_data[j].name, "%s", process_store_temp.name);
+                                //process_data[k].cpu_usage = 0;
+                                process_data[j].ram_usage=ram_used_kb/1024; //MB
+                                process_data[j].id = process_store_final[j].id;
+                                process_data[j].cpu_usage = 100*(process_store_final[j].utime + process_store_final[j].stime - (process_store_initial[i].utime + process_store_initial[i].stime))/(cpu_total_time_final-cpu_total_time_initial);
+                                pid_exist=1;
 
+                                j++;
 
+                                break;
+                            }
+                        }
+                        if((pid_exist==0)&&(initialize_this==1)){
+                            gtk_list_store_append (GTK_LIST_STORE(g_id_list) , &iter);
+                            gtk_list_store_set (GTK_LIST_STORE(g_id_list), &iter,0, process_store_temp.name,1,"0 MB",2,"0 %%",3,"0 kB/s",4,"0 kB/s",5, process_store_temp.id,-1);
+                            sprintf(process_data[j].name, "%s", process_store_temp.name);
+                            process_data[j].ram_usage=ram_used_kb/1024; //MB
+                            process_data[j].id = process_store_temp.id;
+                            process_data[j].cpu_usage = 100*(process_store_final[j].utime + process_store_final[j].stime - (process_store_initial[i].utime + process_store_initial[i].stime))/(cpu_total_time_final-cpu_total_time_initial);
+                            j++;
+                        }
+                    }
+                }else{
+                    continue;
+                }
 
+                //continue;
+            }
+         
+        }
 
+        //////////free(args);
 
+        //g_free(iter);
+        closedir(d);
+        memset(process_store_initial, '\0', sizeof(process_store_initial));
 
+        int h;
+        for(h=0;h<num_process;h++){
 
+            process_store_initial[h].id = process_store_final[h].id;
+            process_store_initial[h].utime=process_store_final[h].utime;
+            process_store_initial[h].stime=process_store_final[h].stime;
 
-
-
-
-    sprintf(str_count, "%0.2f", (float)( disk_load_slow_u[0]));
+        }
+        initialize_this = 1;
+        //pthread_mutex_unlock(&lock); 
+    }
+    sprintf(str_count, "%0.2f", (float)(disk_load_slow_u[0]));
     gtk_label_set_text(GTK_LABEL(g_id_disk_read), strcat(str_count, " MB/s"));
 
-    sprintf(str_count, "%0.2f", (float)( disk_load_slow_u[1]));
+    sprintf(str_count, "%0.2f", (float)(disk_load_slow_u[1]));
     gtk_label_set_text(GTK_LABEL(g_id_disk_write), strcat(str_count, " MB/s"));
+    cpu_total_time_initial =cpu_total_time_final;
+    dir = NULL;
+    endptr=NULL;
+    process_path=NULL;
+    dir_name=NULL;
+    //initial_slow_update();
+    slow_process();
+}
+//gboolean timer_handler(app_widgets *widgets);
 
-
-    initial_slow_update();
+gboolean slow_update_process()
+{
+    //slow_process();
+    return TRUE;
 }
 
-//gboolean timer_handler(app_widgets *widgets);
 gboolean slow_update()
 {
     final_slow_update();
@@ -1470,25 +1669,30 @@ void allocating_array(int cpu_count)
     onceloadavg = (double *)malloc(cpu_count * sizeof(double));
     fast_loadavg = (double *)malloc(cpu_count * sizeof(double));
     fast_onceloadavg = (double *)malloc(cpu_count * sizeof(double));
-    dyn_stored_load = (double *)malloc(100 * cpu_count * sizeof(double));
-    dyn_stored_net_load = (double *)malloc(2 * 100 * sizeof(double));
-    dyn_stored_disk_load = (double *)malloc(2 * 100 * sizeof(double));
+    dyn_stored_load = (dynamic_stored_load *)malloc(cpu_count * sizeof(dynamic_stored_load));
+    temp_load = (dynamic_stored_load *)malloc(cpu_count * sizeof(dynamic_stored_load));
+    dyn_stored_net_load = (dynamic_stored_load *)malloc(2 * sizeof(dynamic_stored_load));
+    dyn_stored_disk_load = (dynamic_stored_load *)malloc(2 * sizeof(dynamic_stored_load));
     dispose_num = (int *)malloc(30 * sizeof(int));
-
-    dyn_a = (long double *)malloc(4 * cpu_count * sizeof(long double));
-    dyn_b = (long double *)malloc(4 * cpu_count * sizeof(long double));
+    dispose_num_slow = (disposable_ld *)malloc(1000 * sizeof(disposable_ld));
+    process_store_final = (process_t *)malloc(1000 * sizeof(process_t));
+    process_store_initial = (process_t *)malloc(1000 * sizeof(process_t));
+    process_data = (process_t *)malloc(1000 * sizeof(process_t));
+    process_paths = (process_path_t *)malloc(num_process * sizeof(process_path_t));
+    dyn_a = (DynamicArray *)malloc(cpu_count * sizeof(DynamicArray));
+    dyn_b = (DynamicArray *)malloc(cpu_count * sizeof(DynamicArray));
     //dyn_dwm = (GtkWidget *)malloc(10 * sizeof(GtkWidget));
 
     //allocate values to zero
     int i = 0;
-    for (i; i < cpu_count; i++)
+    for (i = 0; i < cpu_count; i++)
     {
         loadavg[i] = 0;
         onceloadavg[i] = 0;
         fast_loadavg[i] = 0;
         fast_onceloadavg[i] = 0;
         int j = 0;
-        for (j; j < 100; j++)
+        for (j = 0; j < 100; j++)
         {
             dyn_stored_load[i].c[j] = 0;
             dyn_stored_net_load[0].c[j] = 0;
@@ -1567,20 +1771,22 @@ void computer_info()
     int starti = (int)startf;
     if (startf == starti)
     {
-        printf("1 First factor is %d\n", starti);
-        return 0;
-    }
-    for (i = starti; i <= number; i++)
-    {
-        if (number % i == 0)
+        //printf("1 First factor is %d\n", starti);
+        //return 0;
+    }else{
+        for (i = starti; i <= number; i++)
         {
-            factorable_cpu_count[0] = i;
-            factorable_cpu_count[1] = number / i;
-            //printf("First factor is %d\n",);
-            //printf("Second factor is %d\n",number/i);
-            break;
+            if (number % i == 0)
+            {
+                factorable_cpu_count[0] = i;
+                factorable_cpu_count[1] = number / i;
+                //printf("First factor is %d\n",);
+                //printf("Second factor is %d\n",number/i);
+                break;
+            }
         }
     }
+
 
     FILE *meminfo = fopen("/proc/meminfo", "rb");
     //do anything here fix everything fix network icon
@@ -1601,8 +1807,62 @@ void computer_info()
     //printf("%LG percent used\n",);
 
     fclose(meminfo);
+    //free(dispose_string);
+
     allocating_array(cpu_count);
 }
+
+void* slow_update_thread(void *args){
+    g_timeout_add_seconds(1, (GSourceFunc)slow_update, NULL);
+}
+void* slow_update_process_thread(void *args){
+    g_timeout_add_seconds(1, (GSourceFunc)slow_update_process, NULL);
+}
+void* f_fast_update_thread(void *args){
+    g_timeout_add(50, (GSourceFunc)fast_update, NULL);
+}
+int bol_col0_sort=1;
+int bol_col1_sort=1;
+int bol_col2_sort=1;
+void sort_col0(){
+    if(bol_col0_sort){
+        gtk_tree_sortable_set_sort_column_id(g_sortable,0,GTK_SORT_ASCENDING);
+        bol_col0_sort=0; 
+
+    }else{
+
+                gtk_tree_sortable_set_sort_column_id(g_sortable,0,GTK_SORT_DESCENDING);
+        bol_col0_sort=1;
+    }
+    bol_col2_sort=1;
+    bol_col1_sort=1;
+}
+
+void sort_col1(){
+    if(bol_col1_sort){
+        gtk_tree_sortable_set_sort_column_id(g_sortable,6,GTK_SORT_DESCENDING);
+        bol_col1_sort=0; 
+
+    }else{
+        gtk_tree_sortable_set_sort_column_id(g_sortable,6,GTK_SORT_ASCENDING);
+        bol_col1_sort=1;
+    }
+        bol_col2_sort=1;
+            bol_col0_sort=1;
+}
+
+void sort_col2(){
+    if(bol_col2_sort){
+        gtk_tree_sortable_set_sort_column_id(g_sortable,2,GTK_SORT_DESCENDING);
+        bol_col2_sort=0; 
+    }else{
+        gtk_tree_sortable_set_sort_column_id(g_sortable,2,GTK_SORT_ASCENDING);
+        bol_col2_sort=1;
+    }
+    bol_col0_sort=1;
+    bol_col1_sort=1;
+}
+
 
 static void
 on_activate()
@@ -1640,6 +1900,24 @@ on_activate()
     g_id_network_in = GTK_WIDGET(gtk_builder_get_object(builder, "id_network_inbound"));
     g_id_disk_write = GTK_WIDGET(gtk_builder_get_object(builder, "id_disk_write"));
     g_id_disk_read = GTK_WIDGET(gtk_builder_get_object(builder, "id_disk_read"));
+    g_id_headerbar_center = GTK_WIDGET(gtk_builder_get_object(builder, "id_headerbar_center"));
+    g_id_list = GTK_LIST_STORE(gtk_builder_get_object(builder, "id_liststore"));
+    g_id_tree= GTK_WIDGET(gtk_builder_get_object(builder, "id_tree_view")); 
+    g_id_proc_dialog= GTK_WIDGET(gtk_builder_get_object(builder, "id_proc_dialog"));
+    g_sortable = GTK_TREE_SORTABLE(g_id_list);
+    //GtkTreeViewColumn *pColumn = gtk_tree_view_get_column (g_id_tree,0);
+    //pColumn->set_sort_column(0);
+    gtk_tree_sortable_set_sort_column_id(g_sortable,2,GTK_SORT_DESCENDING);
+    bol_col2_sort=0;
+    //GtkTreeModel *sort_model1;
+    //sort_model1 = gtk_tree_model_sort_new_with_model (g_id_list);
+    //gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE (sort_model1),1,GTK_SORT_DESCENDING);
+        //GTK_TREE_VIEW_COLUMN *pColumn = g_id_tree.get_column(0);
+    //g_id_list.set_sort_column_id(0);
+  //gtk_widget_queue_draw(GTK_WIDGET(g_id_tree));
+    //int number_of_rows;
+    //number_of_rows = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(g_id_list), NULL);
+    //printf("%d\n",number_of_rows);
     computer_info();
 
     GtkWidget *da;
@@ -1649,13 +1927,17 @@ on_activate()
     on_activate4(window, builder);
     on_activate5(window, builder);
     on_activate6(window, builder);
-    g_timeout_add(50, (GSourceFunc)fast_update, NULL);
+    pthread_create(&(fast_update_thread), NULL, &f_fast_update_thread, NULL);
+                    //g_timeout_add(50, (GSourceFunc)fast_update, NULL);
     gtk_builder_connect_signals(builder, NULL);
 
-    initial_slow_update();
+    //initial_slow_update();
     final_slow_update();
-
-    g_timeout_add_seconds(1, (GSourceFunc)slow_update, NULL);
+    pthread_create(&(tid[0]), NULL, &slow_update_thread, NULL);
+    pthread_create(&(tid[1]), NULL, &slow_update_process_thread, NULL);
+    pthread_join(tid[0], NULL); 
+    pthread_join(tid[1], NULL); 
+    pthread_mutex_destroy(&lock); 
     gtk_window_set_default_size(GTK_WINDOW(window), 570, 300);
     //gtk_window_set_resizable(GTK_WINDOW(window),true);
     g_object_unref(builder);
@@ -1663,15 +1945,136 @@ on_activate()
     gtk_widget_show(window);
 }
 
+
+
+
+
+void* show_proc_dialog(void *args){
+    gtk_dialog_run( GTK_MESSAGE_DIALOG( g_id_proc_dialog ) );
+    gtk_widget_hide( g_id_proc_dialog );
+    //pthread_exit();
+}
+ void
+  view_popup_menu_onDoSomething (GtkWidget *menuitem, gpointer userdata)
+  {
+      //GThread   *thread;
+    //WorkerData *wd;
+      //wd = g_malloc (sizeof *wd);
+    /* we passed the view as userdata when we connected the signal */
+    GtkTreeView *treeview = GTK_TREE_VIEW(userdata);
+
+    GtkTreeSelection *selection;
+//selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(g_id_tree));
+    selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeview));
+//gtk_tree_selection_get_selected(selection, &g_id_list, &iter);
+    GtkTreeIter   iter;
+    if (gtk_tree_selection_get_selected(selection, &g_id_list, &iter))
+    {
+        gchar *name;
+
+        gtk_tree_model_get (g_id_list, &iter, 0, &name, -1);
+
+        g_print ("selected row is: %s\n", name);
+
+        g_free(name);
+    }
+    else
+    {
+        g_print ("no row selected.\n");
+    }
+    pthread_create(&(proc_dialog[0]), NULL, &show_proc_dialog, NULL); 
+    g_print ("Do something!\n");
+  }
+
+
+  void
+  view_popup_menu (GtkWidget *treeview, GdkEventButton *event, gpointer userdata)
+  {
+    GtkWidget *menu, *menuitem,*menuitem1;
+
+    menu = gtk_menu_new();
+
+    menuitem = gtk_menu_item_new_with_label("End Process");
+    menuitem1 = gtk_menu_item_new_with_label("Properties");
+    g_signal_connect(menuitem, "activate",
+                     (GCallback) view_popup_menu_onDoSomething, treeview);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), menuitem);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), menuitem1);
+    gtk_widget_show_all(menu);
+
+    /* Note: event can be NULL here when called from view_onPopupMenu;
+     *  gdk_event_get_time() accepts a NULL argument */
+    gtk_menu_popup(GTK_MENU(menu), NULL, NULL, NULL, NULL,
+                   (event != NULL) ? event->button : 0,
+                   gdk_event_get_time((GdkEvent*)event));
+  }
+
+
+  gboolean
+  view_onButtonPressed (GtkWidget *treeview, GdkEventButton *event, gpointer userdata)
+  {
+    /* single click with the right mouse button? */
+    if (event->type == GDK_BUTTON_PRESS  &&  event->button == 3)
+    {
+      g_print ("Single right click on the tree view.\n");
+
+      /* optional: select row if no row is selected or only
+       *  one other row is selected (will only do something
+       *  if you set a tree selection mode as described later
+       *  in the tutorial) */
+      if (1)
+      {
+
+        GtkTreeSelection *selection;
+
+        selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeview));
+
+        if (gtk_tree_selection_count_selected_rows(selection)  <= 1)
+        {
+           GtkTreePath *path;
+
+           /* Get tree path for row that was clicked */
+           if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(treeview),
+                                             (gint) event->x, 
+                                             (gint) event->y,
+                                             &path, NULL, NULL, NULL))
+           {
+             gtk_tree_selection_unselect_all(selection);
+             gtk_tree_selection_select_path(selection, path);
+             gtk_tree_path_free(path);
+           }
+        }
+      } /* end of optional bit */
+
+      view_popup_menu(treeview, event, userdata);
+
+      return TRUE; /* we handled this */
+    }
+
+    return FALSE; /* we did not handle this */
+  }
+
+
+
+
+
+
+
 int main(int argc, char *argv[])
 {
+    XInitThreads();
     gtk_init(&argc, &argv);
     on_activate();
     gtk_main();
+
     return 0;
 }
 
 void on_window_main_destroy()
 {
     gtk_main_quit();
+}
+
+void on_proc_dialog_destroy(){
+    pthread_cancel(proc_dialog[0]);
 }
