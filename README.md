@@ -17,13 +17,23 @@ Since my machine is 32 core, I dont know yet if it could work in other core mach
 # TODO
 These are the following things that are needed to be implemented. Well, usually need help here so that it can become a full pledge system monitor and that we might have an alternative to gnome system monitor.
 
- [x] Making the three buttons in headerbar move in the center like in Gnome System Monitor.
+**High priority**
+- [x] Making the three buttons in headerbar move in the center like in Gnome System Monitor.
+- [x] GtkStack
+- [x] GtkStackSwitcher for switching window content
+- [x] Process list like in Gnome System Monitor
+- [x] Implement sorting process by name
+- [x] Implement sorting process by mem usage
+- [x] Implement sorting process by cpu usage
+- [ ] Dynamic cpu core
+- [ ] Implement end task
 
- [x] GtkStack & GtkStackSwitcher for switching window content (There is no tutorial on how to use these in c-code, so I dont know what to do yet)
-
- [] Process list like in Gnome System Monitor
-
- [] And file system
+**Low priority**
+- [ ] Create CentOS 7 package & submit to epel
+- [ ] Fix file system 
+- [ ] Speed up Cairo rendering
+- [ ] Implement switch to total cpu & show cpu core graph
+- [ ] Implement GtkStack for Ram, Disk & Network
 
 # Screenshoots
 ![alt text](https://github.com/jobs-git/gtk-system-monitor/blob/master/Screenshot%20from%202019-01-25%2000-23-03.png)
