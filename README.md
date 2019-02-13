@@ -25,8 +25,8 @@ These are the following things that are needed to be implemented. Well, usually 
 - [x] Implement sorting process by name
 - [x] Implement sorting process by mem usage
 - [x] Implement sorting process by cpu usage
+- [x] Implement end task
 - [ ] Dynamic cpu core
-- [ ] Implement end task
 
 **Low priority**
 - [ ] Create CentOS 7 package & submit to epel
